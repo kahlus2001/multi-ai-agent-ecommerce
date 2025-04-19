@@ -4,3 +4,9 @@ langchain
 langchain-openai
 python-dotenv
 langchain-community
+webcolors
+pandas
+sqlite3
+rapidfuzz
+spacy
+fastapi
