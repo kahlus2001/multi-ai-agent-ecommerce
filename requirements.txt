@@ -1,12 +1,14 @@
+# For the search agent, make sure Ollama is installed locally: https://ollama.com
+fastapi
 kagglehub
 langgraph
 langchain
 langchain-openai
-python-dotenv
 langchain-community
-webcolors
+langchain-core
 pandas
-sqlite3
+pydantic
+python-dotenv
 rapidfuzz
 spacy
-fastapi
+webcolors

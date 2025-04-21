@@ -173,4 +173,7 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
+db/products.db.DS_Store
+data/flipkart_fashion_products_dataset.json
+db/products.db
 db/products.db

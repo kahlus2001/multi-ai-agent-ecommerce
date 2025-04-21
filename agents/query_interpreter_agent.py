@@ -1,22 +1,71 @@
+import os
+import re
+import json
 import pandas as pd
 import sqlite3
-import re
 import webcolors
-from fuzzywuzzy import fuzz  # Swap with rapidfuzz if needed
+from dotenv import load_dotenv
+from rapidfuzz import fuzz
 
+from langchain_community.chat_models import ChatOllama
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import JsonOutputParser
+from pydantic.v1 import BaseModel, Field
+
+load_dotenv()
+USE_LLM = os.getenv("USE_LLM", "false").lower() == "true"
+
+class QueryFilters(BaseModel):
+    product_type: str | None = Field(default=None)
+    color: str | None = Field(default=None)
+    brand: str | None = Field(default=None)
+    price_min: int | None = Field(default=None)
+    price_max: int | None = Field(default=None)
+    gender: str | None = Field(default=None)
+    attributes: list[str] = Field(default_factory=list)
+
+parser = JsonOutputParser(pydantic_object=QueryFilters)
+instructions = parser.get_format_instructions().replace("{", "{{").replace("}", "}}")
+
+prompt = ChatPromptTemplate.from_messages([
+    ("system", 
+    """You are a product search assistant. Your job is to extract structured filters from natural language product queries.
+
+Only return a JSON object with **these keys**: 
+- product_type (from category, sub_category, or title fields)
+- color (as a CSS3 color name, like "red", "black", not hex codes)
+- brand (match against known brand names)
+- price_min (in USD, optional)
+- price_max (in USD, optional)
+- gender (Men, Women, Unisex, etc.)
+- attributes (list of descriptive words from product_details, e.g. waterproof, comfortable, breathable)
+
+Rules:
+- DO NOT include any explanations or comments.
+- DO NOT invent new keys.
+- Use null if a field is not found.
+- Keep attributes as a list of strings.
+- 'cheap' implies price_max is low, 'expensive' implies high price_min, but do not assign specific numbers.
+- Examples of valid gender values: "men", "women", "unisex", "boys", "girls"
+- Always format your output as strict JSON matching the required keys.
+"""
+    ),
+    ("human", 
+     "Query: {input}\n\nReturn ONLY valid JSON matching the above format.")
+])
+
+
+
+llm = ChatOllama(model="mistral")
 
 class QueryInterpreterAgent:
     def __init__(self, db_path="db/products.db"):
-        # Load product data
         conn = sqlite3.connect(db_path)
-        df = pd.read_sql_query(
-            "SELECT brand, category, sub_category, title FROM products", conn)
+        df = pd.read_sql_query("SELECT brand, category, sub_category, title, product_details FROM products", conn)
         conn.close()
 
-        # Colors
         self.colors = list(webcolors.CSS3_NAMES_TO_HEX.keys())
 
-        # Product types (from title, category, subcategory)
         raw_types = pd.Series(
             df['category'].dropna().tolist() +
             df['sub_category'].dropna().tolist() +
@@ -24,28 +73,19 @@ class QueryInterpreterAgent:
         ).str.lower().str.strip().unique().tolist()
         self.types = [t for t in raw_types if len(t) > 2]
 
-        # Brands (cleaned)
-        self.brands = [b for b in df['brand'].dropna().str.lower(
-        ).str.strip().unique().tolist() if len(b) > 2]
+        self.brands = [b for b in df['brand'].dropna().str.lower().str.strip().unique().tolist() if len(b) > 2]
 
-        # Attributes
-        self.attributes = ['comfortable', 'discount', 'best rated', 'cheap']
+        details_text = df['product_details'].dropna().astype(str).str.lower().str.cat(sep=" ")
+        self.attributes = pd.Series(re.findall(r'\b[a-zA-Z\-]{4,}\b', details_text)).value_counts().head(30).index.tolist()
 
-        # Gender-related words to filter from product types
-        self.gender_terms = [
-            'men', 'man', 'women', 'woman', 'male', 'female',
-            'boy', 'girl', 'boys', 'girls', 'unisex'
-        ]
+        self.gender_terms = ['men', 'man', 'women', 'woman', 'male', 'female', 'boy', 'girl', 'boys', 'girls', 'unisex']
 
-        # Debug
-        print(
-            f"✅ Loaded {len(self.types)} product types, {len(self.brands)} brands.")
-        print("📦 Example product types:", self.types[:10])
-        print("🏷️ Example brands:", self.brands[:10])
+        print(f"✅ Loaded {len(self.types)} product types, {len(self.brands)} brands.")
+        print("🎯 Top attributes:", self.attributes[:10])
 
     def run(self, state: dict) -> dict:
         user_input = state.get("user_input", "").lower()
-        print(f"\n🔍 Checking user input: {user_input}")
+        print(f"\n🔍 User input: {user_input}")
 
         query_params = {
             "product_type": None,
@@ -57,62 +97,55 @@ class QueryInterpreterAgent:
             "attributes": []
         }
 
-        # Match color
+        if USE_LLM:
+            try:
+                chain = prompt | llm | parser
+                llm_result = chain.invoke({"input": user_input})
+                query_params = llm_result.dict() if hasattr(llm_result, 'dict') else llm_result
+                print("🤖 LLM matched filters:", query_params)
+                state["query_params"] = query_params
+                return state
+            except Exception as e:
+                print("⚠️ LLM parsing failed, falling back to rule-based:", str(e))
+
+        print("🧠 Using rule-based interpreter...")
+
         for color in self.colors:
-            if re.search(rf"\b{re.escape(color)}\b", user_input):
-                print(f"🎨 Matched color: {color}")
+            if re.search(rf"\\b{re.escape(color)}\\b", user_input):
                 query_params["color"] = color
                 break
 
-        # Fuzzy match product type
-        print("🎯 Fuzzy matching against product types...")
-        best_type = None
-        best_type_score = 0
+        best_type, best_score = None, 0
         for p_type in self.types:
             if p_type in self.gender_terms:
                 continue
             score = fuzz.partial_ratio(p_type, user_input)
-            if score > best_type_score:
-                best_type = p_type
-                best_type_score = score
-
-        if best_type_score > 80:
+            if score > best_score:
+                best_type, best_score = p_type, score
+        if best_score > 80:
             query_params["product_type"] = best_type
-            print(
-                f"✅ Fuzzy matched product type: {best_type} (score: {best_type_score})")
-        else:
-            print("❌ No suitable product type match found.")
 
-        # Fuzzy match brand
-        print("🎯 Fuzzy matching against brands...")
-        best_brand = None
-        best_brand_score = 0
+        best_brand, best_score = None, 0
         for brand in self.brands:
             if not brand.strip():
                 continue
             score = fuzz.partial_ratio(brand, user_input)
-            if score > best_brand_score:
-                best_brand = brand
-                best_brand_score = score
-
-        if best_brand_score > 80:
+            if score > best_score:
+                best_brand, best_score = brand, score
+        if best_score > 80:
             query_params["brand"] = best_brand
-            print(
-                f"✅ Fuzzy matched brand: {best_brand} (score: {best_brand_score})")
-        else:
-            print("❌ No suitable brand match found.")
 
-        # Match price
         under = re.search(r'under \$?(\d+)', user_input)
-        between = re.search(
-            r'between \$?(\d+)\s*(?:and|to)\s*\$?(\d+)', user_input)
+        over = re.search(r'(?:over|above|more than) \$?(\d+)', user_input)
+        between = re.search(r'between \$?(\d+)\s*(?:and|to)\s*\$?(\d+)', user_input)
         if under:
             query_params["price_max"] = int(under.group(1))
+        elif over:
+            query_params["price_min"] = int(over.group(1))
         elif between:
             query_params["price_min"] = int(between.group(1))
             query_params["price_max"] = int(between.group(2))
 
-        # Match gender
         if any(term in user_input for term in ['men', 'male', 'man', 'boys', 'boy']):
             query_params["gender"] = "Men"
         elif any(term in user_input for term in ['women', 'female', 'woman', 'girls', 'girl']):
@@ -120,12 +153,11 @@ class QueryInterpreterAgent:
         elif 'unisex' in user_input:
             query_params["gender"] = "Unisex"
 
-        # Match attributes
-        for attr in self.attributes:
+        for attr in self.attributes + ['cheap', 'expensive']:
             if attr in user_input:
-                print(f"✨ Matched attribute: {attr}")
                 query_params["attributes"].append(attr)
 
+        print("✅ Rule-based filters:", query_params)
         state["query_params"] = query_params
         return state
 
@@ -140,11 +172,15 @@ if __name__ == "__main__":
         "Best rated blue pants for women",
         "I'm looking for a grey hoodie from Levis for boys",
         "Show me a white tshirt from HM for girls",
-        "Find a unisex jacket under $100"
+        "Find a unisex jacket under $100",
+        "Find expensive sneakers for men",
+        "Need breathable waterproof boots over $200",
+        "Find lightweight jackets above $150 for men",
+        "Show me waterproof sandals for women under $80"
     ]
 
     for query in test_inputs:
         state = {"user_input": query}
         result = agent.run(state)
-        print(f"\n📝 Input: {query}")
+        print(f"\n📜 Input: {query}")
         print(f"📦 Parsed: {result['query_params']}")
