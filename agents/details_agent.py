@@ -44,45 +44,4 @@ class DetailsAgent(Runnable):
         # Save the response back into the state for display
         state["final_response"] = response.content
         return state
-    
-if __name__ == "__main__":
-    # Sample search result (as would come from SearchAgent)
-    test_state = {
-        "search_results": [
-            {
-                "title": "Nike Revolution 5 Running Shoes",
-                "brand": "Nike",
-                "selling_price": 2999,
-                "actual_price": 4999,
-                "discount": "40%",
-                "average_rating": 4.4,
-                "category": "Footwear",
-                "sub_category": "Running Shoes",
-                "seller": "Nike Official Store",
-                "out_of_stock": 0,
-                "url": "https://example.com/nike-revolution-5"
-            },
-            {
-                "title": "Adidas Lite Racer",
-                "brand": "Adidas",
-                "selling_price": 2799,
-                "actual_price": 3999,
-                "discount": "30%",
-                "average_rating": 4.1,
-                "category": "Footwear",
-                "sub_category": "Casual Shoes",
-                "seller": "Adidas Authorized",
-                "out_of_stock": 0,
-                "url": "https://example.com/adidas-lite-racer"
-            }
-        ]
-    }
 
-    # Run the DetailsAgent with test data
-    agent = DetailsAgent()
-    result_state = agent.invoke(test_state)
-
-    # Print out the generated response
-    print("\n🧪 Test Output:")
-    print(result_state["final_response"])
- 

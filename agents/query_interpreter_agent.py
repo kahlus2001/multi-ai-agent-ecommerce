@@ -160,27 +160,3 @@ class QueryInterpreterAgent:
         print("✅ Rule-based filters:", query_params)
         state["query_params"] = query_params
         return state
-
-
-if __name__ == "__main__":
-    agent = QueryInterpreterAgent()
-
-    test_inputs = [
-        "Show me red dresses from Adidas Originals under $50",
-        "Looking for a black t-shirt between $20 and $40 for men",
-        "I want comfortable jeans from Puma",
-        "Best rated blue pants for women",
-        "I'm looking for a grey hoodie from Levis for boys",
-        "Show me a white tshirt from HM for girls",
-        "Find a unisex jacket under $100",
-        "Find expensive sneakers for men",
-        "Need breathable waterproof boots over $200",
-        "Find lightweight jackets above $150 for men",
-        "Show me waterproof sandals for women under $80"
-    ]
-
-    for query in test_inputs:
-        state = {"user_input": query}
-        result = agent.run(state)
-        print(f"\n📜 Input: {query}")
-        print(f"📦 Parsed: {result['query_params']}")
