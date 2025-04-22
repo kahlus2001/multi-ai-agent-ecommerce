@@ -11,4 +11,4 @@ pydantic
 python-dotenv
 rapidfuzz
 spacy
-webcolors
+webcolors==1.11.1

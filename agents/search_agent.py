@@ -2,68 +2,59 @@ import sqlite3
 from langchain.agents import Tool, initialize_agent
 from langchain_core.runnables import Runnable
 from langchain_core.language_models import BaseLanguageModel
-from langchain_openai import ChatOpenAIś
+from langchain_openai import ChatOpenAI
 
 
-# tool
+# Tool to execute a SQL query
 def make_execute_db_query_tool(db_path: str):
     def execute(query: str):
         try:
-            # Force limit if not present
             if "limit" not in query.lower():
-                query += " LIMIT 10"
-
+                query += " LIMIT 5"
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(query)
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
-
         except Exception as e:
             return f"⚠️ Query failed: {e}"
     return execute
 
 
+# Optional helper to get known values from DB
+def get_distinct_values(db_path: str):
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    result = {
+        "brands": [row[0] for row in cursor.execute("SELECT DISTINCT brand FROM products WHERE brand IS NOT NULL")],
+        "categories": [row[0] for row in cursor.execute("SELECT DISTINCT category FROM products WHERE category IS NOT NULL")],
+        "sub_categories": [row[0] for row in cursor.execute("SELECT DISTINCT sub_category FROM products WHERE sub_category IS NOT NULL")]
+    }
+    conn.close()
+    return result
+
+
+# SearchAgent
 class SearchAgent(Runnable):
     def __init__(self, db_path: str, llm: BaseLanguageModel = None):
         self.llm = llm or ChatOpenAI(temperature=0)
         self.db_path = db_path
-
-        self.valid_columns = [
-            "id", "title", "description", "brand", "category", "sub_category",
-            "actual_price", "selling_price", "average_rating", "discount",
-            "seller", "out_of_stock", "url"
-        ]
-
-        # Tool for executing SQL
-        execute_tool = make_execute_db_query_tool(db_path)
+        self.execute_tool = make_execute_db_query_tool(db_path)
 
         self.tools = [
             Tool(
                 name="execute_db_query",
-                func=execute_tool,
+                func=self.execute_tool,
                 description=(
-                    "Use this tool to query the products SQLite database.\n"
-                    "✅ Available columns:\n"
-                    "- id (TEXT)\n"
-                    "- title (TEXT)\n"
-                    "- description (TEXT)\n"
-                    "- brand (TEXT)\n"
-                    "- category (TEXT)\n"
-                    "- sub_category (TEXT)\n"
-                    "- actual_price (REAL)\n"
-                    "- selling_price (REAL)\n"
-                    "- average_rating (REAL)\n"
-                    "- discount (TEXT)\n"
-                    "- seller (TEXT)\n"
-                    "- out_of_stock (INTEGER: 0 = in stock, 1 = out of stock)\n"
-                    "- url (TEXT)\n\n"
-                    "❗Only use fields from `query_params` in the WHERE clause.\n"
-                    "🚫 Do NOT infer or guess fields if not explicitly provided.\n"
-                    "🚫 Do NOT wrap the SQL query in backticks or triple backticks.\n"
+                    "Use this tool to query the SQLite products database.\n"
+                    "Allowed filters:\n"
+                    "- `selling_price` (REAL) using >= or <=\n"
+                    "- Match words from query in `title` using LOWER(title) LIKE '%word%'\n"
+                    "Do NOT use other columns.\n"
+                    "Use LIMIT 5.\n"
                     "Example:\n"
-                    "SELECT * FROM products WHERE LOWER(brand) LIKE '%york%' AND selling_price < 1000 LIMIT 5"
+                    "SELECT * FROM products WHERE LOWER(title) LIKE '%jacket%' AND selling_price <= 1000 LIMIT 10"
                 )
             )
         ]
@@ -75,39 +66,36 @@ class SearchAgent(Runnable):
             verbose=True
         )
 
+    def run_prompt(self, query_params):
+        prompt = (
+            "You are querying a `products` SQLite table.\n"
+            f"The user provided query params: {query_params}\n\n"
+            "Build a SQL query using ONLY these rules:\n"
+            "- Match text values from `product_type`, `color`, `brand`, `attributes` in the `title` "
+            "using LOWER(title) LIKE '%value%'\n"
+            "- Use `selling_price >= price_min` if provided\n"
+            "- Use `selling_price <= price_max` if provided\n"
+            "Only use `title` and `selling_price` in the WHERE clause.\n"
+            "Run the query using the `execute_db_query` tool. Use LIMIT 5.\n"
+            "If query returns something, return the results in JSON format.\n"
+            "If no results are found, change the query to something more generic.\n"
+            "Return the results in JSON format.\n\n"
+        )
+        return self.agent.run(prompt)
+
     def invoke(self, state: dict) -> dict:
         query_params = state.get("query_params")
-        
+
         if query_params:
-            prompt = (
-                "You are querying an SQLite database with a `products` table.\n"
-                f"The user provided the following filters as key-value pairs: {query_params}\n\n"
-                "✅ Available columns:\n"
-                "- id, title, description, brand, category, sub_category\n"
-                "- actual_price, selling_price, average_rating, discount\n"
-                "- seller, out_of_stock, url\n\n"
-                "❗ Only use these fields in the WHERE clause.\n"
-                "For text fields, use LOWER(...) with LIKE for fuzzy matching.\n"
-                "Do not use columns that aren't listed.\n"
-                "Do NOT return the SQL query.\n\n"
-                "Instead, use the `execute_db_query` tool to run the SQL query.\n"
-                "After the tool is called, return only the **first matching product** (as a dictionary)."
-            )
+            response = self.run_prompt(query_params)
         else:
-            prompt = (
-                "User did not provide structured filters. "
-                "Try to infer user intent and query the SQLite `products` table accordingly.\n"
-                "Use only these columns: id, title, description, brand, category, sub_category, actual_price, "
-                "selling_price, average_rating, discount, seller, out_of_stock, url.\n"
-                "Use LOWER(...) with LIKE for fuzzy matching on text fields.\n"
-                "Call the `execute_db_query` tool with the generated SQL query.\n"
-                "Then return only the **first matching product** as a dictionary."
+            # Fallback when structured query not available
+            response = self.agent.run(
+                "No structured filters provided. "
+                "Infer keywords from the user input and query the `products` table. "
+                "Search these keywords in the `title` column using LOWER(title) LIKE '%keyword%'. "
+                "Return up to 5 results using the `execute_db_query` tool."
             )
 
-        response = self.agent.run(prompt)
-
-        state["search_results"] = (
-            response if isinstance(response, list) else [response]
-        )
+        state["search_results"] = response if isinstance(response, list) else [response]
         return state
-
