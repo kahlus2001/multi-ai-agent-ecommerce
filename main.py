@@ -12,8 +12,10 @@ def main():
     # Create the SQLite DB from JSON
     provision_database_from_json(json_path, db_path)
 
-    # Build the graph, pass DB path instead of dataset
+    # Build the graph
     graph = build_graph(db_path)
+
+    # Run CLI loop
 
     while True:
         user_input = input("Enter your query: ")
@@ -21,9 +23,9 @@ def main():
             break
 
         response = graph.invoke({"user_input": user_input})
-        print("\n🛍️ Recommended Products:")
-        for p in response.get("search_results", []):
-            print(p)
+
+        print("\n🛍️ Smart Shopping Assistant Says:")
+        print(response.get("final_response", "⚠️ No response generated."))
 
 if __name__ == "__main__":
     main()

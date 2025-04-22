@@ -2,7 +2,7 @@ import sqlite3
 from langchain.agents import Tool, initialize_agent
 from langchain_core.runnables import Runnable
 from langchain_core.language_models import BaseLanguageModel
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAIś
 
 
 # tool
